@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Reactive;
@@ -12,6 +12,8 @@ using ReactiveUI.Fody.Helpers;
 using TMSpeech.Core;
 using TMSpeech.Core.Plugins;
 using TMSpeech.Core.Services.Notification;
+using Fleck;
+using System.Linq;
 
 namespace TMSpeech.GUI.ViewModels;
 
@@ -98,6 +100,10 @@ public class CaptionStyleViewModel : ViewModelBase
 
 public class MainViewModel : ViewModelBase
 {
+
+    private WebSocketServer? _socketServer;
+    private readonly List<IWebSocketConnection> _allClients = new();
+
     [ObservableAsProperty]
     public JobStatus Status { get; }
 
@@ -140,6 +146,14 @@ public class MainViewModel : ViewModelBase
     {
         _jobManager = JobManagerFactory.Instance;
         CaptionStyle = new CaptionStyleViewModel(this);
+
+        // --- 新增：初始化服务器 ---
+        _socketServer = new WebSocketServer("ws://0.0.0.0:8081");
+        _socketServer.Start(socket =>
+        {
+            socket.OnOpen = () => _allClients.Add(socket);
+            socket.OnClose = () => _allClients.Remove(socket);
+        });
 
         Observable.FromEventPattern<JobStatus>(
                 p => { _jobManager.StatusChanged += p; },
@@ -228,6 +242,13 @@ public class MainViewModel : ViewModelBase
                 p => _jobManager.TextChanged += p,
                 p => _jobManager.TextChanged -= p)
             .Select(x => x.EventArgs.Text.Text)
+            .Do(text => {
+                // 核心推送：遍历所有已连接的 Steam 浏览器并发送文字
+                foreach (var client in _allClients.ToList())
+                {
+                    if (client.IsAvailable) client.Send(text);
+                }
+            })
             .Merge(Observable.Return("欢迎使用TMSpeech"))
             .ToPropertyEx(this, x => x.Text);
 
